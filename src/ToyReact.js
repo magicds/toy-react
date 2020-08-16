@@ -31,43 +31,13 @@ function merge(target, ...objArr) {
 // const a = merge({ a: [1] }, { a: 1, c: [] }, { b: 2 });
 // console.log(a);
 
-class ElementWrap {
-  constructor(type) {
-    /**@type HTMLElement */
-    this.root = document.createElement(type);
-  }
-  setAttribute(k, v) {
-    if (k[0] === 'o' && k[1] === 'n') {
-      const eventName = k.replace(/^on(\w)/, (m, g) => g.toLowerCase());
-      this.root.addEventListener(eventName, v);
-      return;
-    }
-    if (k === 'className') {
-      this.root.setAttribute('class', v);
-    } else {
-      this.root.setAttribute(k, v);
-    }
-  }
-  appendChild(component) {
-    const range = document.createRange();
-    range.setStart(this.root, this.root.childNodes.length);
-    range.setEnd(this.root, this.root.childNodes.length);
-    component[RENDER_TO_DOM](range);
-  }
-  [RENDER_TO_DOM](/**@type Range */ range) {
-    range.deleteContents();
-    range.insertNode(this.root);
-  }
-}
+function replaceContent(range, node) {
+  range.insertNode(node);
+  range.setStartAfter(node);
+  range.deleteContents();
 
-class TextWrap {
-  constructor(textContent) {
-    this.root = document.createTextNode(textContent);
-  }
-  [RENDER_TO_DOM](/**@type Range */ range) {
-    range.deleteContents();
-    range.insertNode(this.root);
-  }
+  range.setStartBefore(node);
+  range.setEndAfter(node);
 }
 
 export class Component {
@@ -77,12 +47,12 @@ export class Component {
     this._root = null;
     this._range = null;
   }
-  get root() {
-    if (!this._root) {
-      return this.render().root;
-    }
-    return this._root;
-  }
+  // get root() {
+  //   if (!this._root) {
+  //     return this.render().root;
+  //   }
+  //   return this._root;
+  // }
   setState(state) {
     if (this.state === null && !isObject(this.state)) {
       this.state = state;
@@ -90,7 +60,7 @@ export class Component {
       return;
     }
     merge(this.state, state);
-    this.renderer();
+    this.update();
   }
   setAttribute(k, v) {
     this.props[k] = v;
@@ -98,45 +68,148 @@ export class Component {
   appendChild(component) {
     this.children.push(component);
   }
-
+  get vdom() {
+    return this.render().vdom;
+  }
   [RENDER_TO_DOM](/**@type Range */ range) {
     this._range = range;
-    this.render()[RENDER_TO_DOM](range);
+    /* 旧的 vdom */
+    this._vdom = this.vdom;
+    this._vdom[RENDER_TO_DOM](range);
   }
 
-  renderer() {
-    const oldRange = this._range;
+  update() {
+    // 新的
+    const vdom = this.vdom;
+    update(this._vdom, vdom);
+    this._vdom = vdom;
 
-    const range = document.createRange();
-    range.setStart(oldRange.startContainer, oldRange.startOffset);
-    range.setEnd(oldRange.startContainer, oldRange.startOffset);
-    this[RENDER_TO_DOM](range);
+    function update(oldNode, newNode) {
+      // type, props, children
+      // #textContent
 
-    oldRange.setStart(range.endContainer, range.endOffset);
-    oldRange.deleteContents();
+      if (!isSameNode(oldNode, newNode)) {
+        newNode[RENDER_TO_DOM](oldNode._range);
+        return;
+      }
+      newNode._range = oldNode._range;
+
+      const newChildren = newNode.vchildren;
+      const oldChildren = oldNode.vchildren;
+
+      if (!newChildren || !newChildren.length) {
+        return;
+      }
+
+      // 记录旧的 children的range
+      /**@type Range */
+      let tailRange = oldChildren[oldChildren.length - 1]._range;
+
+      for (let i = 0; i < newChildren.length; i++) {
+        const newChild = newChildren[i];
+        const oldChild = oldChildren[i];
+
+        if (i < oldChildren.length) {
+          update(oldChild, newChild);
+        } else {
+          // 如果新节点更多 则需将新节点插入
+          const range = document.createRange();
+          range.setStart(tailRange.endContainer, tailRange.endOffset);
+          range.setEnd(tailRange.endContainer, tailRange.endOffset);
+          newChild[RENDER_TO_DOM](range);
+          tailRange = range;
+        }
+      }
+    }
+
+    /**
+     * 是否相同节点
+     * @param {*} oldNode
+     * @param {*} newNode
+     */
+    function isSameNode(oldNode, newNode) {
+      if (oldNode.type !== newNode.type) {
+        return false;
+      }
+
+      if (newNode.type === '#text') {
+        return newNode.content === oldNode.content;
+      }
+
+      if (Object.keys(newNode.props).length !== Object.keys(oldNode.props).length) {
+        return false;
+      }
+
+      for (let k in newNode.props) {
+        if (newNode.props[k] !== oldNode.props[k]) {
+          return false;
+        }
+      }
+
+      return true;
+    }
   }
-  // mountTo(/**@type Range */ range) {
-  //   // this.render().mountTo(parent);
-  //   this.range = range;
-  //   this.update();
-  //   // const range = document.createRange();
-  //   // range.setStartAfter(parent.lastChild);
-  // }
-  // update() {
-  //   // 删除dom前加入 pl 占位 避免 旧的dom删除时后续节点的 range 变化
-  //   // TODO 是否可以通过替换的方式完成？
-  //   const pl = document.createComment('node remove holder');
-  //   const range = document.createRange();
-  //   range.setStart(this.range.endContainer, this.range.endOffset);
-  //   range.setEnd(this.range.endContainer, this.range.endOffset);
-  //   range.insertNode(pl);
+}
 
-  //   this.range.deleteContents();
-  //   const vdom = this.render();
-  //   vdom.mountTo(this.range);
+class ElementWrap extends Component {
+  constructor(type) {
+    super(type);
+    this.type = type;
+  }
+  get vdom() {
+    this.vchildren = this.children.map((child) => child.vdom);
+    return this;
+  }
+  [RENDER_TO_DOM](/**@type Range */ range) {
+    this._range = range;
 
-  //   // pl.remove();
-  // }
+    const root = document.createElement(this.type);
+
+    for (let key in this.props) {
+      setAttribute(key, this.props[key]);
+    }
+
+    if (!this.vchildren) {
+      this.vchildren = this.children.map((child) => child.vdom);
+    }
+    for (let child of this.vchildren) {
+      const childRange = document.createRange();
+      childRange.setStart(root, root.childNodes.length);
+      childRange.setEnd(root, root.childNodes.length);
+      child[RENDER_TO_DOM](childRange);
+    }
+
+    replaceContent(range, root);
+
+    function setAttribute(k, v) {
+      if (k[0] === 'o' && k[1] === 'n') {
+        const eventName = k.replace(/^on(\w)/, (m, g) => g.toLowerCase());
+        root.addEventListener(eventName, v);
+        return;
+      }
+      if (k === 'className') {
+        root.setAttribute('class', v);
+      } else {
+        root.setAttribute(k, v);
+      }
+    }
+  }
+}
+
+class TextWrap extends Component {
+  constructor(textContent) {
+    super(textContent);
+    this.type = '#text';
+    this.content = textContent;
+  }
+  [RENDER_TO_DOM](/**@type Range */ range) {
+    this._range = range;
+    const root = document.createTextNode(this.content);
+    replaceContent(range, root);
+  }
+  get vdom() {
+    return this;
+  }
 }
 
 export function createElement(type, attributes, ...children) {

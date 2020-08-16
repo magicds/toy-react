@@ -208,6 +208,7 @@ class Game extends Component {
 }
 
 // ========================================
-
+const game = <Game />;
+window.game = game;
 const demo3 = createDemo();
-ToyReact.render(<Game />, demo3);
+ToyReact.render(game, demo3);
